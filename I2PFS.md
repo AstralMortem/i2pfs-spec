@@ -274,7 +274,7 @@ All subkeys are derived via HKDF-SHA256 with mandatory domain separation:
 ```
 SubKey := HKDF-SHA256(
     ikm  = master_secret_bytes,
-    salt = "I2PFS-v2-" || subkey_label,
+    salt = "I2PFS-v1-<label>" || subkey_label,
     info = epoch_bytes || node_id_commitment,
     len  = 32
 )
@@ -312,9 +312,7 @@ Standard Noise protocol counter nonces (64-bit little-endian counter, starting a
 
 ### 6.1 Capability Separation
 
-v1.0's ACI design had a critical flaw: it embedded `blind_factor` — a value that must remain secret to prevent preimage attacks — directly inside the shareable 68-byte ACI. This allowed anyone who received the ACI to also learn the secret that was supposed to protect privacy.
-
-v2.0 separates content addressing into two distinct objects:
+v1.0 separates content addressing into two distinct objects:
 
 - **ACI (Anonymous Content Identifier)** — the public, shareable address. Uniquely identifies a specific piece of content. Contains no secret material. Can be shared openly.
 - **ReadCap (Read Capability)** — the secret required to decrypt and verify the content. Shared only with authorized recipients via the encrypted recipient header. Never shared openly.
@@ -336,12 +334,12 @@ The ACI is a 38-byte fixed-width binary value:
 
 | Field | Size | Values | Description |
 |-------|------|--------|-------------|
-| `version` | 1 byte | `0x02` | Protocol version; v2.0 ACIs are incompatible with v1.0 |
+| `version` | 1 byte | `0x01` | Protocol version; |
 | `codec` | 2 bytes | `0x0000`=raw, `0x0001`=i2pfs-dag | Content type identifier |
 | `hash_algo` | 1 byte | `0x1E`=BLAKE3 | Hash algorithm identifier |
 | `content_hash` | 32 bytes | — | `BLAKE3(ciphertext_root)` — the BLAKE3 hash of the root block's encrypted payload |
 
-**Key design change from v1.0:** `content_hash` is computed over the **ciphertext** (encrypted root block payload), not over the plaintext. This means:
+`content_hash` is computed over the **ciphertext** (encrypted root block payload), not over the plaintext. This means:
 
 1. No secret material (blind_factor) is needed to compute or verify the ACI.
 2. The ACI can be verified by any holder of the ciphertext block, without requiring decryption.
@@ -354,8 +352,8 @@ The ReadCap is the secret capability required to decrypt content. It is a 76-byt
 ```
  Byte offset:  0                           31  32                          75
                ├──────────────────────────────┬───────────────────────────────┤
-               │      content_root_key        │        blind_factor            │
-               │         32 bytes             │          44 bytes              │
+               │      content_root_key        │        blind_factor           │
+               │         32 bytes             │          44 bytes             │
                └──────────────────────────────┴───────────────────────────────┘
                Total: 76 bytes
 ```
@@ -375,7 +373,7 @@ Content is located in the DHT using a key derived from the ACI and a time-based 
 ```
 DHT_key := HKDF-SHA256(
     ikm  = ACI_bytes,           // 38 bytes; no secret material
-    salt = "I2PFS-DHT-v2",
+    salt = "I2PFS-DHT-v1",
     info = uint64_le(epoch),    // epoch = unix_time_seconds / 21600 (6-hour epochs)
     len  = 32
 )
@@ -390,7 +388,7 @@ DHT_key := HKDF-SHA256(
 ACIs and ReadCaps are encoded for out-of-band sharing:
 
 ```
-ACI:     i2pfs2:[BASE32(aci_bytes)]
+ACI:     i2pfs:[BASE32(aci_bytes)]
 ReadCap: i2pfsrc:[BASE32(readcap_bytes)]
 
 Example retrieval link (ACI + ReadCap, separated by #):
@@ -425,14 +423,14 @@ Rationale for 32 KB:
 
 ### 7.2 Merkle DAG Structure (Binary Format)
 
-Blocks are organized into a Merkle DAG. v2.0 uses a compact binary DAG format instead of v1.0's JSON representation.
+Blocks are organized into a Merkle DAG. Protocol uses a compact binary DAG format
 
 **Root DAG Block binary format:**
 
 ```
 Root DAG Block (little-endian binary)
 ├── magic        : 4 bytes  = 0x49 0x32 0x44 0x47  ("I2DG")
-├── version      : 1 byte   = 0x02
+├── version      : 1 byte   = 0x01
 ├── flags        : 1 byte   bit 0=inline_content, bit 1=has_recipients, bit 2=compressed
 ├── total_size   : 8 bytes  uint64, original plaintext size in bytes
 ├── chunk_count  : 4 bytes  uint32, number of leaf chunks
@@ -450,14 +448,14 @@ Total root block size for a 1 MB file (32 chunks): `4+1+1+8+4+4+2+4 = 28` bytes 
 ```
 Leaf Chunk Block
 ├── magic        : 4 bytes  = 0x49 0x32 0x43 0x4B  ("I2CK")
-├── version      : 1 byte   = 0x02
+├── version      : 1 byte   = 0x01
 ├── chunk_index  : 4 bytes  uint32, position in the DAG (for ordering verification)
 ├── payload_len  : 4 bytes  uint32, encrypted payload length
 ├── encrypted_payload : payload_len bytes  (see Section 13.2)
 └── poly1305_tag : 16 bytes  (part of AEAD, appended for framing clarity)
 ```
 
-**Note on v1.0's double-encryption:** v1.0 wrapped every leaf block in an additional ChaCha20-Poly1305 envelope at the block transport layer, separate from the content encryption. This added 28 bytes of overhead per chunk and a full AEAD operation per block with no security benefit (the content is already authenticated via BLAKE3 in the ACI). v2.0 has a single encryption layer: each leaf chunk's `encrypted_payload` is the AEAD ciphertext produced during content encryption (Section 13.2), and the `poly1305_tag` is the authentication tag from that operation. No separate transport-layer envelope encryption is applied.
+Protocol has a single encryption layer: each leaf chunk's `encrypted_payload` is the AEAD ciphertext produced during content encryption (Section 13.2), and the `poly1305_tag` is the authentication tag from that operation. No separate transport-layer envelope encryption is applied.
 
 ### 7.3 Block Deduplication
 
@@ -467,7 +465,7 @@ BLAKE3 content hashing provides automatic deduplication at the chunk level. Two 
 
 ### 7.4 Download Resume Checkpointing
 
-v2.0 introduces a **block bitmap** checkpoint for resuming interrupted downloads. When a consumer has downloaded some but not all chunks of a file, it persists:
+Protocol introduces a **block bitmap** checkpoint for resuming interrupted downloads. When a consumer has downloaded some but not all chunks of a file, it persists:
 
 ```
 Resume Checkpoint (stored locally, never transmitted)
@@ -490,7 +488,7 @@ I2P-DHT is a modified Kademlia DHT rebuilt for I2P's high-latency, high-churn en
 
 **Core modifications from standard Kademlia:**
 
-| Parameter | Standard Kademlia | I2P-DHT v2 | Rationale |
+| Parameter | Standard Kademlia | I2P-DHT | Rationale |
 |-----------|------------------|------------|-----------|
 | k (bucket size) | 8 | 20 | Higher churn rate requires larger peer sets for consistent routing |
 | α (parallelism) | 3 | 1 → 3 (adaptive) | Initial sequential operation avoids tunnel pool exhaustion; parallelism increases after first successful hop confirms tunnel health |
@@ -501,15 +499,13 @@ I2P-DHT is a modified Kademlia DHT rebuilt for I2P's high-latency, high-churn en
 
 ### 8.2 Node ID Space and Derivation
 
-**Critical v1.0 fix:** v1.0 derived DHT IDs as `BLAKE3(i2p_destination ‖ epoch)`, creating a mathematical link between the node's I2P routing identity and its DHT identity. v2.0 generates DHT IDs independently:
-
 ```
 At first launch:
   dht_seed := CSPRNG(32 bytes)   // stored encrypted on disk, never transmitted
-  DHT_ID[epoch=0] := BLAKE3(dht_seed ‖ "I2PFS-DHT-v2-epoch" ‖ uint64_le(0))
+  DHT_ID[epoch=0] := BLAKE3(dht_seed ‖ "I2PFS-DHT-v1-epoch" ‖ uint64_le(0))
 
 At each epoch change (every 48 hours):
-  DHT_ID[epoch=N] := BLAKE3(dht_seed ‖ "I2PFS-DHT-v2-epoch" ‖ uint64_le(N))
+  DHT_ID[epoch=N] := BLAKE3(dht_seed ‖ "I2PFS-DHT-v1-epoch" ‖ uint64_le(N))
 ```
 
 The `dht_seed` is completely independent of the I2P Destination and the master identity key. An observer who knows a node's DHT ID cannot derive its I2P Destination, and vice versa.
@@ -537,13 +533,13 @@ Each bucket entry:
 
 #### 8.3.1 Compact SAM Destination Format
 
-v1.0 stored full I2P Destinations (516 bytes) in DHT routing table entries. Full Destinations include a long-lived public key that functions as a stable identifier. v2.0 stores only the **SAM address hash** (387 bytes: 256-byte ElGamal key + 128-byte signing key + 3-byte cert), which is sufficient to establish a SAM STREAM CONNECT without exposing the full static key material to DHT observers. The full Destination is resolved via SAM LOOKUP when a connection is needed.
+Protocol stores only the **SAM address hash** (387 bytes: 256-byte ElGamal key + 128-byte signing key + 3-byte cert), which is sufficient to establish a SAM STREAM CONNECT without exposing the full static key material to DHT observers. The full Destination is resolved via SAM LOOKUP when a connection is needed.
 
 ### 8.4 DHT Record Types
 
-#### PROVIDER Record (v2.0)
+#### PROVIDER Record 
 
-v1.0 embedded the full I2P Destination in PROVIDER records, creating a permanent content→node-identity mapping in the DHT. v2.0 uses a **blinded provider token** that allows consumers to contact the provider via I2P without the DHT record itself revealing which node is the provider.
+Protocol uses a **blinded provider token** that allows consumers to contact the provider via I2P without the DHT record itself revealing which node is the provider.
 
 ```
 PROVIDER record (binary, 142 bytes fixed):
@@ -563,7 +559,7 @@ PROVIDER record (binary, 142 bytes fixed):
 provider_token := BLAKE3(
     provider_session_pubkey ‖   // 32-byte X25519 public key of Provider SAM Session
     dht_key ‖                   // epoch-rotated content DHT key
-    "I2PFS-provider-token-v2"
+    "I2PFS-provider-token-v1"
 )[:64]
 ```
 
@@ -650,26 +646,15 @@ Preconditions: routing table populated with at least k/2 = 10 live peers.
 
 ### 9.1 Overview and Design Philosophy
 
-AnonSwap replaces I2PFS v1.0's AnonBitSwap. The name change reflects significant protocol redesign, not superficial revision. The core design philosophy is:
+The core design philosophy is:
 
 1. **Fixed binary frames only.** No CBOR, no JSON, no variable-length schema-implicit encoding. Every field is at a fixed offset with a known size, enabling zero-copy deserialization and eliminating parser attack surface.
 2. **No persistent peer state.** AnonSwap maintains no per-peer state beyond the current session's Noise handshake keys and ratchet state. There are no credit scores, no want-list histories, no connection scores.
 3. **Sessions are ephemeral by design.** An AnonSwap session is created for a specific content retrieval and torn down when that retrieval completes (or fails). Session IDs are never reused.
 4. **I2P tunnel budget awareness.** Every design decision accounts for the fact that sending a message costs real tunnel bandwidth. Unnecessary round trips are eliminated by design.
 
-### 9.2 Key Differences from v1.0 AnonBitSwap
 
-| Aspect | v1.0 AnonBitSwap | v2.0 AnonSwap |
-|--------|-----------------|---------------|
-| Message encoding | CBOR (variable-length, schema-implicit) | Fixed binary frames |
-| Session establishment | Noise_XX (3 messages, 1.5 RTT, exposes initiator static key) | Noise_IKpsk2 (2 messages, 1 RTT, responder static key hidden) |
-| Session identity | DHT identity key (48h rotation breaks sessions) | Purpose-built provider session key (24h or 1000-session rotation) |
-| Post-compromise security | None | Symmetric ratchet every 1000 messages |
-| Resumable downloads | Not specified | Block bitmap checkpointing |
-| Optimistic send threshold | < 4 KB | Any block (SEND_BLOCK sent immediately, saving 1 RTT) |
-| Want-list broadcast | Unicast to DHT providers | Unicast; no broadcast capability exists |
-
-### 9.3 Session Establishment
+### 9.2 Session Establishment
 
 AnonSwap uses **Noise_IKpsk2** for session establishment. This pattern was chosen for three reasons:
 
@@ -680,7 +665,7 @@ AnonSwap uses **Noise_IKpsk2** for session establishment. This pattern was chose
 ```
 Noise_IKpsk2 handshake:
 
-  Prologue: "I2PFS-AnonSwap-v2" (used as Noise prologue; both parties must match)
+  Prologue: "I2PFS-AnonSwap-v1" (used as Noise prologue; both parties must match)
 
   Initiator (Consumer)                 Responder (Provider)
   ─────────────────────────────────────────────────────────
@@ -692,7 +677,7 @@ Noise_IKpsk2 handshake:
   PSK derivation:
     psk := HKDF-SHA256(
         ikm  = dht_key_for_content,    // 32-byte DHT key (public, epoch-derived)
-        salt = "I2PFS-session-psk-v2",
+        salt = "I2PFS-session-psk-v1",
         info = session_id,             // 16-byte ephemeral random session ID
         len  = 32
     )
@@ -704,7 +689,7 @@ The PSK derived from the content's DHT key means that only a consumer who correc
 - Message 1 (consumer → provider): 32 (ephemeral) + 32+16 (encrypted static) + 32+16 (encrypted payload) = ~128 bytes
 - Message 2 (provider → consumer): 32 (ephemeral) + payload = ~32 bytes + response payload
 
-### 9.4 Message Frame Format
+### 9.3 Message Frame Format
 
 All AnonSwap messages use a fixed binary frame:
 
@@ -731,9 +716,8 @@ Total overhead: 29 bytes per message
 | `0x08` | RATCHET | Either → Either | `new_ratchet_key[32]` (32 bytes; see Section 9.6) |
 | `0x09` | SESSION_END | Either → Either | `reason[1]` (1 byte; 0x00=normal, 0x01=error, 0x02=provider_full) |
 
-**Rationale for fixed-width fields:** CBOR (used in v1.0) requires a general-purpose parser with dynamic field lookup. Fixed binary frames are parseable with a single `memcpy` per field — zero allocation, zero schema discovery, zero parser ambiguity. The overhead saving vs. CBOR varies by message type but is typically 15–30 bytes per message.
 
-### 9.5 Retrieval Session Lifecycle
+### 9.4 Retrieval Session Lifecycle
 
 ```
 Consumer                              Provider
@@ -763,19 +747,19 @@ Consumer                              Provider
    │──── SESSION_END(0x00) ───────────────►│
 ```
 
-**Optimistic sending (v2.0 default):** Providers send `SEND_BLOCK` immediately after receiving `WANT_BLOCK` without waiting for any confirmation. This eliminates the `HAVE_BLOCK → WANT_BLOCK[confirm]` round trip that was optional in v1.0 but wasted 500–800 ms per block. The consumer's `ACK` serves only as a flow control signal (sliding window), not as a delivery confirmation.
+**Optimistic sending:** Providers send `SEND_BLOCK` immediately after receiving `WANT_BLOCK` without waiting for any confirmation. This eliminates the `HAVE_BLOCK → WANT_BLOCK[confirm]` round trip. The consumer's `ACK` serves only as a flow control signal (sliding window), not as a delivery confirmation.
 
 Providers that cannot serve a block (not found, capacity exceeded) MUST send `DONT_HAVE` within 5 seconds of receiving `WANT_BLOCK`. Silence is not an acceptable response.
 
-### 9.6 Session Anonymity
+### 9.5 Session Anonymity
 
 **Ephemeral session IDs:** Each AnonSwap session uses a 16-byte random `session_id` generated freshly for the session. Session IDs are never reused. A provider who receives two sessions with different `session_id` values cannot determine whether they originate from the same consumer.
 
 **Per-retrieval client SAM session:** The consumer's AnonSwap sessions originate from a **Client SAM Session** that is rotated for each top-level content retrieval (one root ACI = one SAM session rotation). This ensures the I2P Destination seen by the provider changes with each new retrieval, preventing the provider from building a retrieval history for any consumer.
 
-**No persistent want-list:** v2.0 has no concept of a broadcast want-list. WANT_BLOCK messages are sent unicast only to providers discovered via DHT lookup. A provider learns only that a consumer (with an unknown identity) wants a specific block — not what other blocks the same consumer may be fetching.
+**No persistent want-list:** Protocol has no concept of a broadcast want-list. WANT_BLOCK messages are sent unicast only to providers discovered via DHT lookup. A provider learns only that a consumer (with an unknown identity) wants a specific block — not what other blocks the same consumer may be fetching.
 
-### 9.7 Symmetric Ratchet
+### 9.6 Symmetric Ratchet
 
 After every 1,000 AnonSwap messages within a session (tracking the `sequence` counter), both parties advance the symmetric ratchet:
 
@@ -822,7 +806,7 @@ At p_available = 0.50: P = 1 − 0.50^5 ≈ 96.88%
 At p_available = 0.40: P = 1 − 0.60^5 ≈ 92.22%
 ```
 
-R=5 provides acceptable availability even in degraded network conditions. R=3 (v1.0's `REPLICATION_MIN`) is a floor, not a target.
+R=5 provides acceptable availability even in degraded network conditions. R=3 is a floor, not a target.
 
 ### 10.2 Replica Selection Algorithm
 
@@ -961,7 +945,7 @@ At 800 ms RTT and 32 KB blocks at an effective 16 KB/s tunnel rate (2 seconds pe
 At 500 ms RTT and 32 KB/s bandwidth (1 second per block):
 `WINDOW_SIZE = floor(500/1000) + 2 = 2`
 
-**Maximum window size is capped at 6** (not 8 as in v1.0). The v1.0 cap of 8 at typical bandwidth rates put 256 KB in flight simultaneously, filling 8–32 seconds of tunnel capacity. This risks tunnel saturation on the provider side and produces self-inflicted congestion. A cap of 6 (192 KB in flight) is more conservative and appropriate for the I2P bandwidth envelope.
+**Maximum window size is capped at 6** A cap of 6 (192 KB in flight) is more conservative and appropriate for the I2P bandwidth envelope.
 
 ### 11.3 Speculative Prefetch
 
@@ -1100,17 +1084,6 @@ I2P Lease Sets published to the NetDB advertise a node's inbound tunnels and are
 
 ### 13.1 Encryption Architecture Overview
 
-v2.0 introduces a fundamental architectural change from v1.0:
-
-**v1.0 (flawed):**
-```
-plaintext → [encrypt entire file with content_key] → ciphertext → [chunk ciphertext]
-                                                                         ↓
-                                              [wrap each chunk in block envelope with separate AEAD]
-```
-This required the entire plaintext in memory before any block could leave the node, and applied two layers of AEAD encryption (block envelope + content) with no security benefit from the outer layer.
-
-**v2.0 (corrected):**
 ```
 plaintext → [chunk plaintext into 32 KB segments]
                          ↓
@@ -1139,14 +1112,14 @@ ENCRYPT_AND_CHUNK(plaintext_bytes, recipients[]):
     a.  Derive per-chunk key:
           chunk_key[i] := HKDF-SHA256(
               ikm  = content_root_key,
-              salt = "I2PFS-chunk-key-v2",
+              salt = "I2PFS-chunk-key-v1",
               info = uint32_le(i),
               len  = 32
           )
 
     b.  Derive deterministic nonce (prevents nonce reuse under any circumstances):
           chunk_nonce[i] := BLAKE3(
-              content_root_key ‖ "I2PFS-nonce-v2" ‖ uint32_le(i)
+              content_root_key ‖ "I2PFS-nonce-v1" ‖ uint32_le(i)
           )[:12]
 
     c.  AAD for this chunk (binds ciphertext to its position in the file):
@@ -1186,7 +1159,7 @@ ENCRYPT_AND_CHUNK(plaintext_bytes, recipients[]):
     c.  wrap_key[j] := HKDF-SHA256(
             ikm  = shared_secret[j],
             salt = ek_pub[j],
-            info = "I2PFS-readcap-wrap-v2" ‖ root_aci_bytes,
+            info = "I2PFS-readcap-wrap-v1" ‖ root_aci_bytes,
             len  = 32
         )
     d.  wrap_nonce[j] := CSPRNG(12 bytes)
@@ -1243,7 +1216,7 @@ RETRIEVE_AND_DECRYPT(root_aci, root_block, leaf_blocks[], recipient_privkey):
         wrap_key := HKDF-SHA256(
             ikm  = shared_secret,
             salt = ek_pub,
-            info = "I2PFS-readcap-wrap-v2" ‖ root_aci_bytes,
+            info = "I2PFS-readcap-wrap-v1" ‖ root_aci_bytes,
             len  = 32
         )
         Try: readcap_bytes := ChaCha20-Poly1305-Open(
@@ -1270,8 +1243,8 @@ RETRIEVE_AND_DECRYPT(root_aci, root_block, leaf_blocks[], recipient_privkey):
           If actual_hash != leaf_aci[i].content_hash: CHUNK_INTEGRITY_FAILED. Discard, retry.
 
     b.  Derive decryption parameters:
-          chunk_key[i]   := HKDF-SHA256(content_root_key, "I2PFS-chunk-key-v2", uint32_le(i), 32)
-          chunk_nonce[i] := BLAKE3(content_root_key ‖ "I2PFS-nonce-v2" ‖ uint32_le(i))[:12]
+          chunk_key[i]   := HKDF-SHA256(content_root_key, "I2PFS-chunk-key-v1", uint32_le(i), 32)
+          chunk_nonce[i] := BLAKE3(content_root_key ‖ "I2PFS-nonce-v1" ‖ uint32_le(i))[:12]
           chunk_aad[i]   := root_aci_bytes ‖ uint32_le(i)
 
     c.  Decrypt:
@@ -1421,7 +1394,8 @@ I2PFS provides **Mutable Pointers (MPs)**: signed DHT records that map a stable 
 
 ### 15.2 Mutable Pointer Key Blinding
 
-v1.0 exposed the `mp_pubkey` in MP_VALUE records stored in the DHT, making the public key observable. v2.0 uses a **blinded signing scheme** where the DHT key for the MP record is derived from but does not reveal the publisher's stable signing key.
+
+Protocol uses a **blinded signing scheme** where the DHT key for the MP record is derived from but does not reveal the publisher's stable signing key.
 
 ```
 MP key setup:
@@ -1432,7 +1406,7 @@ MP key setup:
   // Blind factor changes each epoch to prevent long-term tracking
   mp_blind_factor[epoch] := HKDF-SHA256(
       ikm  = mp_master_privkey,
-      salt = "I2PFS-MP-blind-v2",
+      salt = "I2PFS-MP-blind-v1",
       info = uint64_le(epoch),
       len  = 32
   )
@@ -1445,7 +1419,7 @@ MP key setup:
 
   // DHT key for epoch
   MP_DHT_key[epoch] := BLAKE3(
-      mp_master_pubkey ‖ "I2PFS-MP-DHT-v2" ‖ uint64_le(epoch)
+      mp_master_pubkey ‖ "I2PFS-MP-DHT-v1" ‖ uint64_le(epoch)
   )
 ```
 
@@ -1521,7 +1495,7 @@ Per-session flow control:
 SEND_WINDOW = clamp(
     value  = floor(RTT_p50_ms / block_transfer_time_ms) + 2,
     min    = 2,
-    max    = 6     // not 8 as in v1.0; see Section 11.2 rationale
+    max    = 6     // 
 )
 
 block_transfer_time_ms = (32768 * 8) / (effective_bandwidth_kbps * 1000)
@@ -1542,7 +1516,7 @@ Nodes SHOULD implement configurable bandwidth quotas to prevent I2PFS traffic fr
 Recommended defaults (configurable):
   MAX_UPLOAD_RATE:      16 KB/s   // 50% of typical tunnel capacity
   MAX_DOWNLOAD_RATE:    24 KB/s   // 75% — downloads user-facing, prioritized
-  MAX_REPLICATION_RATE: 6 KB/s    // Background only; below v1.0's 8 KB/s (too aggressive)
+  MAX_REPLICATION_RATE: 6 KB/s    // Background only;
   MAX_DHT_RATE:         2 KB/s    // DHT traffic is small but high-frequency
 ```
 
@@ -1650,30 +1624,20 @@ The hybrid approach (X25519 + ML-KEM combined key agreement) should be used duri
 
 ## 18. Interoperability and Migration
 
-### 18.1 Migration from v1.0
-
-v1.0 and v2.0 ACIs are incompatible. v1.0 ACIs are 68 bytes; v2.0 ACIs are 38 bytes. The version byte (`0x01` vs `0x02`) distinguishes them. A v2.0 node encountering a v1.0 ACI SHOULD:
-
-1. Attempt a DHT lookup using the v1.0 DHT key derivation (documented in the v1.0 spec)
-2. If a provider is found, retrieve the v1.0 block, verify it, and re-publish it under a v2.0 ACI
-3. Return both the v1.0 ACI (for legacy compatibility) and the v2.0 ACI (for v2.0 operations)
-
-v1.0 blocks stored on providers are valid content and SHOULD be migrated to v2.0 format when served, if the migration node has access to the necessary key material (typically the publisher must re-publish).
-
-### 18.2 IPFS Content Bridge
+### 18.1 IPFS Content Bridge
 
 I2PFS can operate an optional **bridge mode** that fetches content from IPFS (via Tor or a pre-configured trusted clearnet gateway) and re-publishes it to I2PFS:
 
 1. Fetch IPFS CID via gateway (outside I2PFS protocol)
 2. Verify content against IPFS CID (multihash verification)
-3. Run `PUBLISH(fetched_content, recipients=[])` to produce a v2.0 root ACI
+3. Run `PUBLISH(fetched_content, recipients=[])` to produce a root ACI
 4. The I2PFS ACI will differ from the original IPFS CID — this is by design
 
 This process is explicitly a content-bridging operation, not a CID translation. The relationship between an IPFS CID and its I2PFS ACI is maintained only in the bridging node's local mapping table, not in any network-visible record.
 
 ### 18.3 SAM Bridge Requirements
 
-I2PFS v2.0 requires I2P's SAM (Simple Anonymous Messaging) bridge v3.3 or later.
+I2PFS v1.0 requires I2P's SAM (Simple Anonymous Messaging) bridge v3.3 or later.
 
 **Required SAM capabilities:**
 
@@ -1832,7 +1796,7 @@ Maximum concurrent AnonSwap sessions should be capped at 10 to prevent tunnel po
 
 All implementations MUST pass the following test vectors before production deployment:
 
-1. **ACI v2 Computation:** Given `ciphertext_bytes`, verify `ACI.content_hash == BLAKE3(ciphertext_bytes)` matches reference.
+1. **ACI Computation:** Given `ciphertext_bytes`, verify `ACI.content_hash == BLAKE3(ciphertext_bytes)` matches reference.
 2. **Per-chunk key derivation:** Given `content_root_key` and `chunk_index`, verify `chunk_key` and `chunk_nonce` match reference values.
 3. **ReadCap wrapping/unwrapping:** Given recipient keypair and plaintext ReadCap, verify round-trip encrypt/decrypt produces identical ReadCap.
 4. **Root block commitment:** Given `leaf_acis[]` and `blind_factor`, verify root commitment matches reference.
@@ -1843,7 +1807,7 @@ All implementations MUST pass the following test vectors before production deplo
 9. **Symmetric ratchet:** Given session keys at message 1000, verify post-ratchet keys match reference.
 10. **Block bitmap checkpoint:** Write checkpoint, simulate crash, resume from checkpoint, verify only missing blocks are re-fetched.
 
-Test vectors are published separately as `I2PFS-testvectors-v2.json` on the I2P eepSite.
+Test vectors are published separately as `I2PFS-testvectors-v1.json` on the I2P eepSite.
 
 ### 19.5 Security Audit Requirements
 
@@ -1871,24 +1835,24 @@ Before any production deployment, implementations MUST undergo the following rev
 
 ### Appendix A: Comparison with IPFS and I2PFS v1.0
 
-| Aspect | IPFS | I2PFS v1.0 | I2PFS v2.0 |
-|--------|------|-----------|-----------|
-| Network | Clearnet (+ overlays) | I2P-native | I2P-native |
-| Content ID | CID (public multihash) | ACI v1 (blinded, but blind factor in ACI) | ACI v2 (hash of ciphertext; no secret in ACI) |
-| Retrieval capability | CID sufficient | ACI + blind_factor (but both in ACI) | ACI + ReadCap (separate; both required) |
-| Encryption | Optional | Mandatory; but double-layer overhead | Mandatory; single per-chunk AEAD layer |
-| Encryption granularity | Varies | Entire file before chunking (requires full file in memory) | Per-chunk (streaming-capable) |
-| Session protocol | libp2p (Noise_XX + Secio) | Noise_XX with DHT identity keys | Noise_IKpsk2 with purpose-built session keys |
-| Post-compromise security | No | No | Yes (symmetric ratchet every 1000 messages) |
-| Message encoding | Protobuf | CBOR (variable-length) | Fixed binary frames |
-| DHT_ID linkage to I2P | N/A | Derived from I2P Destination (privacy flaw) | Independently generated (no linkage) |
-| PROVIDER records | Contain peer IDs | Contain full I2P Destination (privacy flaw) | Contain blinded tokens only |
-| Resumable downloads | Limited (IPFS pin) | Not specified | Block bitmap checkpointing |
-| Mutable pointers | IPNS (public key visible) | MP (pubkey visible in DHT) | MP v2 (epoch-blinded pubkey; only master pubkey stable) |
-| DHT timeout | 1–5 s | 30 s | 30 s |
-| Replication | Passive announce | Proactive push (R=5) | Proactive push (R=5) with diversity scoring |
-| Block size | 256 KB default | 32 KB | 32 KB |
-| Pipeline window | Aggressive | 8 (too large for I2P) | 2–6 (adaptive, bandwidth-calibrated) |
+| Aspect | IPFS | I2PFS v1.0|
+|--------|------|-----------|
+| Network | Clearnet (+ overlays) | I2P-native |
+| Content ID | CID (public multihash) | ACI v1 (hash of ciphertext; no secret in ACI) |
+| Retrieval capability | CID sufficient |  ACI + ReadCap (separate; both required) |
+| Encryption | Optional |  Mandatory; single per-chunk AEAD layer |
+| Encryption granularity | Varies | Per-chunk (streaming-capable) |
+| Session protocol | libp2p (Noise_XX + Secio) | Noise_IKpsk2 with purpose-built session keys |
+| Post-compromise security | No | Yes (symmetric ratchet every 1000 messages) |
+| Message encoding | Protobuf | Fixed binary frames |
+| DHT_ID linkage to I2P | N/A | Independently generated (no linkage) |
+| PROVIDER records | Contain peer IDs | Contain blinded tokens only |
+| Resumable downloads | Limited (IPFS pin) | Block bitmap checkpointing |
+| Mutable pointers | IPNS (public key visible) | MP (epoch-blinded pubkey; only master pubkey stable) |
+| DHT timeout | 1–5 s | 30 s |
+| Replication | Passive announce |  Proactive push (R=5) with diversity scoring |
+| Block size | 256 KB default |  32 KB |
+| Pipeline window | Aggressive | 2–6 (adaptive, bandwidth-calibrated) |
 
 ### Appendix B: Protocol Error Codes
 
@@ -1913,7 +1877,7 @@ All SESSION_END messages, DONT_HAVE responses, and error conditions use a standa
 ```
 Object                     Size            Notes
 ─────────────────────────────────────────────────────────────────
-ACI v2                     38 bytes        Fixed; version byte = 0x02
+ACI                        38 bytes        Fixed; version byte = 0x01
 ReadCap                    76 bytes        Fixed; never transmitted in plaintext
 AnonSwap Frame Header      29 bytes        Fixed; + variable payload
 Noise_IKpsk2 Message 1     ~128 bytes      Initiator → Responder
@@ -1935,8 +1899,8 @@ Recipient header per entry: 136 bytes      ek_pub(32) + wrap_nonce(12) + wrapped
 
 | Term | Definition |
 |------|-----------|
-| **ACI** | Anonymous Content Identifier — I2PFS v2.0's 38-byte content address; commits to ciphertext; contains no secret material |
-| **AnonSwap** | I2PFS's binary block exchange protocol; replaces v1.0 AnonBitSwap |
+| **ACI** | Anonymous Content Identifier — I2PFS v1.0's 38-byte content address; commits to ciphertext; contains no secret material |
+| **AnonSwap** | I2PFS's binary block exchange protocol; |
 | **Blinded Provider Token** | A 64-byte DHT-stored value that allows consumers to contact a provider without the DHT record itself revealing the provider's I2P identity |
 | **Blind Factor** | 32-byte secret value stored in the ReadCap; part of the root block integrity verification; prevents publisher identification via plaintext preimage search |
 | **Content Root Key** | 32-byte secret key stored in the ReadCap; used to derive all per-chunk encryption keys |
