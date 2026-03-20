@@ -1,0 +1,108 @@
+site_name: I2PFS — Anonymous Distributed File System
+site_description: Technical Specification v1.0 for the I2P-native anonymous distributed file system
+site_author: I2PFS Contributors
+repo_url: https://github.com/AstralMortem/i2pfs-spec
+repo_name: i2pfs-spec
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/git-alt
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+      toc_depth: 3
+
+extra:
+  version:
+    provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/AstralMortem
+
+nav:
+  - Home: index.md
+  - "Layer 1 — Network":
+    - "I2P Network Constraints": network-constraints.md
+  - "Layer 2 — Architecture":
+    - "System Architecture": architecture.md
+    - "Node Identity & Anonymity": identity-anonymity.md
+  - "Layer 3 — Cryptography":
+    - "Cryptographic Foundations": cryptography.md
+    - "ACI & Capability Model": aci-capability.md
+    - "End-to-End Encryption": encryption.md
+  - "Layer 4 — Data Model":
+    - "Data Model & Chunking": data-model.md
+  - "Layer 5 — Routing":
+    - "Distributed Hash Table": dht.md
+  - "Layer 6 — Block Exchange":
+    - "AnonSwap Protocol": anonswap.md
+  - "Layer 7 — Storage":
+    - "Replication & Fault Tolerance": replication.md
+    - "Mutable Content & Naming": mutable-content.md
+  - "Layer 8 — Transport Optimization":
+    - "Latency Optimization": latency.md
+    - "Bandwidth & QoS": bandwidth-qos.md
+  - "Flows":
+    - "Publish & Retrieve Flows": flows.md
+  - "Security":
+    - "Threat Model": security.md
+  - "Implementation":
+    - "Implementation Guide": implementation.md
+  - "Reference":
+    - "Types, Constants & Wire Formats": types-constants.md
